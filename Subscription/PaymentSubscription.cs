@@ -4,40 +4,27 @@ namespace redis_example_net.Subscription;
 
 public class PaymentSubscription : BackgroundService
 {
-    private readonly IDatabase _redis;
+    private readonly IDatabase _database;
+    private readonly string stream = "payment";
+    private readonly string group = "group1";
 
     public PaymentSubscription(IConnectionMultiplexer redis)
     {
-        _redis = redis.GetDatabase();
+        _database = redis.GetDatabase();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        const string streamName = "payment";
-        const string groupName = "group1";
-
-        var tokenSource = new CancellationTokenSource();
-        var token = tokenSource.Token;
-
-        string id = string.Empty;
-
-        if (!(await _redis.KeyExistsAsync(streamName)) || (await _redis.StreamGroupInfoAsync(streamName)).All(x => x.Name != groupName))
+        if (!await StreamExistsAsync())
         {
-            await _redis.StreamCreateConsumerGroupAsync(streamName, groupName, "0-0", true);
+            await CreateStreamAsync();
         }
 
-        while (!token.IsCancellationRequested)
-        {    
-            if (!string.IsNullOrEmpty(id))
-            {
-                await _redis.StreamAcknowledgeAsync(streamName, groupName, id);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var result = await _database.StreamReadGroupAsync(stream, group, "payment", ">", 1);
 
-                id = string.Empty;
-            }
-
-            var result = await _redis.StreamReadGroupAsync(streamName, groupName, "payment", ">", 1);
-
-            if (result.Any()) 
+            if (result.Any())
             {
                 var dict = ParseResult(result.First());
                 
@@ -46,10 +33,15 @@ public class PaymentSubscription : BackgroundService
         }
     }
 
-    public override async Task StopAsync(CancellationToken stoppingToken)
+    private async Task<bool> StreamExistsAsync()
     {
-        await base.StopAsync(stoppingToken);
+        return await _database.KeyExistsAsync(stream);
     }
 
-    Dictionary<string, string> ParseResult(StreamEntry entry) => entry.Values.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString());
+    private async Task CreateStreamAsync()
+    {
+        await _database.StreamCreateConsumerGroupAsync(stream, group, StreamPosition.NewMessages, true);
+    }
+
+    private Dictionary<string, string> ParseResult(StreamEntry entry) => entry.Values.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString());
 }

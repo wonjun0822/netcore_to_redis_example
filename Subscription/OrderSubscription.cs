@@ -1,62 +1,52 @@
-using redis_example_net.Interface;
-
 using StackExchange.Redis;
 
 namespace redis_example_net.Subscription;
 
 public class OrderSubscription : BackgroundService
 {
-    private readonly IDatabase _redis;
+    private readonly IDatabase _database;
+    private readonly string stream = "order";
+    private readonly string group = "group1";
 
     public OrderSubscription(IConnectionMultiplexer redis)
     {
-        _redis = redis.GetDatabase();
+        _database = redis.GetDatabase();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        const string streamName = "order";
-        const string groupName = "group1";
-
-        var tokenSource = new CancellationTokenSource();
-        var token = tokenSource.Token;
-
-        string id = string.Empty;
-
-        if (!(await _redis.KeyExistsAsync(streamName)) || (await _redis.StreamGroupInfoAsync(streamName)).All(x => x.Name != groupName))
+        if (!await StreamExistsAsync())
         {
-            await _redis.StreamCreateConsumerGroupAsync(streamName, groupName, "0-0", true);
+            await CreateStreamAsync();
         }
 
-        while (!token.IsCancellationRequested)
-        {    
-            if (!string.IsNullOrEmpty(id))
-            {
-                await _redis.StreamAcknowledgeAsync("order", "group1", id);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var result = await _database.StreamReadGroupAsync(stream, group, "order", ">", 1);
 
-                id = string.Empty;
-            }
-
-            var result = await _redis.StreamReadGroupAsync(streamName, groupName, "order", ">", 1);
-
-            if (result.Any()) 
+            if (result.Any())
             {
                 var dict = ParseResult(result.First());
-                
+
                 Console.WriteLine(string.Join(Environment.NewLine, dict.Select(s => $"{s.Key}, {s.Value}")));
 
-                await _redis.StreamAddAsync(
-                    "payment",
-                    dict.Select(s => new NameValueEntry(s.Key, (RedisValue)s.Value)).ToArray()
-                );
+                await AddToStreamAsync("payment", dict);
             }
         }
     }
 
-    public override async Task StopAsync(CancellationToken stoppingToken)
+    private async Task<bool> StreamExistsAsync() => await _database.KeyExistsAsync(stream);
+
+    private async Task CreateStreamAsync() => await _database.StreamCreateConsumerGroupAsync(stream, group, StreamPosition.NewMessages, true);
+
+    private async Task AddToStreamAsync(string streamName, Dictionary<string, string> values)
     {
-        await base.StopAsync(stoppingToken);
+        var entries = values.Select(s => new NameValueEntry(s.Key, (RedisValue)s.Value)).ToArray();
+        
+        await _database.StreamAddAsync(streamName, entries);
     }
 
-    Dictionary<string, string> ParseResult(StreamEntry entry) => entry.Values.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString());
+    private Dictionary<string, string> ParseResult(StreamEntry entry) => entry.Values.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString());
+
+    public override Task StopAsync(CancellationToken stoppingToken) => base.StopAsync(stoppingToken);
 }
