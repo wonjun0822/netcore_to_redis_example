@@ -15,13 +15,16 @@ public class PaymentSubscription : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!await StreamExistsAsync())
+        // stream consumer group check
+        if (await ConsumerExistsAsync())
         {
-            await CreateStreamAsync();
+            // consumer group이 없다면 group 생성
+            await ConsumerCreateAsync();
         }
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            // stream message read
             var result = await _database.StreamReadGroupAsync(stream, group, "payment", ">", 1);
 
             if (result.Any())
@@ -33,15 +36,9 @@ public class PaymentSubscription : BackgroundService
         }
     }
 
-    private async Task<bool> StreamExistsAsync()
-    {
-        return await _database.KeyExistsAsync(stream);
-    }
+    private async Task<bool> ConsumerExistsAsync() => !(await _database.KeyExistsAsync(stream)) || (await _database.StreamGroupInfoAsync(stream)).All(x => x.Name != group);
 
-    private async Task CreateStreamAsync()
-    {
-        await _database.StreamCreateConsumerGroupAsync(stream, group, StreamPosition.NewMessages, true);
-    }
+    private async Task ConsumerCreateAsync() => await _database.StreamCreateConsumerGroupAsync(stream, group, StreamPosition.NewMessages, true);
 
     private Dictionary<string, string> ParseResult(StreamEntry entry) => entry.Values.ToDictionary(x => x.Name.ToString(), x => x.Value.ToString());
 }

@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.DataProtection;
+
 using redis_example_net.Interface;
 using redis_example_net.Service;
 using redis_example_net.Subscription;
+
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
